@@ -44,6 +44,7 @@ void list_append(const char *string, struct node **head) {
     temp->next = new; //append the name at the end
 }
 
+
 /*
  * 1. Separate input string s into tokens by delimeter
  * 2. Add the tokens to linked list
