@@ -61,6 +61,22 @@ int p_list_delete(const pid_t pid, struct p_node **head) {
     return 0;
 }
 
+void list_append(const char *string, struct node **head) {
+    struct node *new = malloc(sizeof(struct node));
+	strcpy(new->string, string);
+	new->next = NULL;
+
+	if(*head==NULL){
+		*head = new;
+		return;
+	}	
+    struct node *temp = *head;
+    while(temp->next!=NULL){
+    	temp = temp->next;
+    }        
+    temp->next = new;
+}
+
 void p_list_append(const pid_t p, struct p_node **head) {
     struct p_node *new = malloc(sizeof(struct p_node));
     new->pid = p;
@@ -82,25 +98,6 @@ void p_list_print(const struct p_node *list) {
         printf("%d\n", list->pid);
         list = list->next;
     }
-}
-
-void list_append(const char *string, struct node **head) {
-	//initialize the node to append
-    struct node *new = malloc(sizeof(struct node));
-	strcpy(new->string, string);
-	new->next = NULL;
-	
-	//if the list is empty, replace its head with the new node
-	if(*head==NULL){
-		*head = new;
-		return;
-	}	
-    struct node *temp = *head;
-    //advance the pointer till we reach the end
-    while(temp->next!=NULL){
-    	temp = temp->next;
-    }        
-    temp->next = new; //append the name at the end
 }
 
 /*
@@ -228,6 +225,15 @@ int seq_execute(char *arg[]){
 	
 }
 
+/*
+ * PATH varaible capability
+ * Check if the command (arg) refers to an actual file
+ * If it does, return the command as it is
+ * If not, prepend path variable element given in linked list paths
+ * and check if it exists
+ * If the prepended path exists, return the updated command
+ * If not, return NULL
+ */
 char* path(char *arg, struct node *paths){
     struct stat statresult;
     int rv = stat(arg,&statresult);
@@ -246,6 +252,7 @@ char* path(char *arg, struct node *paths){
             temp = temp->next;
         }
         fprintf(stderr, "Error: path not found\n");
+        free(result);
         return NULL;
     }else{
         strcpy(result,arg);
@@ -254,7 +261,7 @@ char* path(char *arg, struct node *paths){
 }
 
 /*
- * Check if the processes are finished
+ * Check if the processes are finished and kill them
  */ 
 void check_child(struct p_node **processes){
     struct pollfd pfd[1];
@@ -264,37 +271,25 @@ void check_child(struct p_node **processes){
  
     // wait for 100 milliseconds
     int rv = poll(&pfd[0], 1, 100);
+    
     pid_t temp[50];
     int index = 0;
  
+    //collect all the finished child processes
     struct p_node *t = *processes;
     while(t!=NULL){
         int status;
-        //printf("HERE1\n");
-        //p_list_print(processes);
         if(waitpid(t->pid,&status,WNOHANG)!=0){
             printf("Process %d completed\n",t->pid);
             temp[index++] = t->pid;
         }
         t = t->next;  
     }
+    //kill all the finished child processes
     for(int i=0; i<index; i++){
         p_list_delete(temp[i],processes);
         kill(temp[i],0);
     }
-    //printf("HERE2\n");
-    //p_list_print(processes);
-    
-    /*
-    if (rv == 0) {
-        printf("timeout\n");    
-    } else if (rv > 0) {
-        printf("you typed something on stdin\n");
-    } else {
-        printf("there was some kind of error\n");
-    }
-    */
-
 }
 
 int main(int argc, char **argv) {
@@ -323,8 +318,7 @@ int main(int argc, char **argv) {
 	fflush(stdout);		
 	char buffer[1024];		
 	while(fgets(buffer,1024,stdin)!=NULL){
-		buffer[strlen(buffer)-1] = '\0';
-		
+		buffer[strlen(buffer)-1] = '\0';		
 		//ignore everything after #		
 		for(int i=0;i<strlen(buffer);i++){
 			if(buffer[i]=='#'){
@@ -333,11 +327,13 @@ int main(int argc, char **argv) {
 			}
 		}
 		
+		check_child(&processes);
+		
 		//linked list of commands separated by semicolons
 		struct node *commands = NULL;	
 		int command_num = tokenify(buffer,&commands,";");
 		
-		//used in parallel mode in case one of the commands calls exit
+		//boolean used in parallel mode in case one of the commands calls exit
 		bool quit_later = false;
 		
 		//go through all commands
@@ -356,8 +352,8 @@ int main(int argc, char **argv) {
 			while(temp2!=NULL){
 			    //if this is arg[0] AND the command is not a built-in command
 			    if(directory && (index==0) && strncmp(temp2->string,"mode",4)!=0 && strncmp(temp2->string,"exit",4)!=0 && strncmp(temp2->string,"jobs",4)!=0 && strncmp(temp2->string,"pause",5)!=0&& strncmp(temp2->string,"resume",6)!=0){
-			        arg[0] = path(temp2->string,paths);
-			        //printf("Now arg is: %s\n",arg[0]);  		        
+			        //update the command if needed
+			        arg[0] = path(temp2->string,paths); 		        
 			    }else{
 			        arg[index] = temp2->string;
 			    }
@@ -367,21 +363,22 @@ int main(int argc, char **argv) {
 			//set the last element of the array to null	
 			arg[index] = NULL;			
 			
-			//if the argument is valid
+			//if the argument is valid, execute
 	        if(arg[0]!=NULL){		
 			    int result = 0;
 			    if(mode==true){
 				    result = seq_execute(arg);
 			    }else{
 				    result = par_execute(arg);
-				    //printf("RESULT IS: %d\n",result);
-			    }
-			
+			    }			    
+			    			    
 			    //exev failed
 			    if(result==-2){
+			        //do nothing
 			    }
-			    //user wants to exit
+			    //user wants to exit in sequential mode
 			    else if(mode==true && result==-1){
+			        //if there aren't any processes running, exit
 			        if(processes==NULL){
 				        list_clear(command);
 				        list_clear(commands);
@@ -389,12 +386,16 @@ int main(int argc, char **argv) {
 				        p_list_clear(processes);
 				        free(arg);
 				        exit(0);
-				    }else{
+				    }
+				    //if not, cannot exit
+				    else{
 				        fprintf(stderr,"Error: cannot exit because processes are still running\n");
 				    }
 				    
 			    }
+			    //user wants to exit in parllel mode
 			    else if(mode==false && result==-1){
+			        //will exit once all commands are executed
 			        quit_later = true;
 			    }
 			    //user wants to switch mode
@@ -403,7 +404,6 @@ int main(int argc, char **argv) {
 			    }
 			    //user wants to see all the running processes
 			    else if(result==2){
-			        //check_child(processes);
 			        struct p_node *t = processes;
 			        if(processes!=NULL){
 			            printf("Still running: \n");
@@ -412,18 +412,17 @@ int main(int argc, char **argv) {
 			    }
 			    //user wants to pause a process
 			    else if(result==3){
-			        //check_child(processes);
 			        kill(atoi(arg[1]),SIGSTOP);
 			    }
+			    //user wants to resume a process
 			    else if(result==4){
-			        //check_child(processes);
 			        kill(atoi(arg[1]),SIGCONT);
 			    }
+			    //command was normally executed
 			    else{			        
-			        if(result!=0 && mode==false){
-			            printf("Adding the process %d\n",result);			
+			        if(result!=0 && mode==false){			            	
 			            p_list_append(result,&processes);
-			            printf("processes now:\n");
+			            check_child(&processes);
 			            p_list_print(processes);
 			        }
 			    }
@@ -435,10 +434,11 @@ int main(int argc, char **argv) {
 			
 		}
 		list_clear(commands);
+		//if there was an exit command in parallel mode we can now exit
 		if(quit_later==true){
 		    if(processes==NULL){
 		        list_clear(paths);
-		        p_list_clear(processes);
+		        p_list_clear(processes);		        
 		        exit(0);
 		    }else{
 		        fprintf(stderr,"Error: cannot exit because processes are still running\n");
